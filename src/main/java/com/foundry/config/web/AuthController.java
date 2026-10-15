@@ -50,6 +50,7 @@ public class AuthController {
     @PostMapping("/login")
     public Me login(@Valid @RequestBody LoginRequest body, HttpServletRequest req, HttpServletResponse res) {
         String key = LoginThrottle.keyOf(body.username(), req.getRemoteAddr());
+        System.out.println(props.admin().username());
         throttle.check(key);
         // Both checks always run, so a wrong username and a wrong password take the same time and give the same answer.
         boolean userOk = MessageDigest.isEqual(
