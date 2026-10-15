@@ -1,0 +1,49 @@
+server:
+  port: ${PORT:8888}
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        same-site: lax
+spring:
+  application:
+    name: foundry-config-server
+  datasource:
+    url: jdbc:h2:file:${CONFIG_DB_PATH:./data/config}
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: validate # Liquibase owns the schema (db/changelog)
+    open-in-view: false
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+  jackson:
+    default-property-inclusion: non_null
+cfg:
+  # The person who edits settings in the console.
+  admin:
+    username: ${CONFIG_ADMIN_USER}
+    password: ${CONFIG_ADMIN_PASSWORD}
+  # Applications that may ask for a token (POST /auth/token with clientId and clientSecret) and then read their
+  # settings (GET /config/{app} with "Authorization: Bearer <token>"). apps = which applications' settings the client
+  # may read; secrets = whether it also gets the settings marked secret. Change these secrets before real use.
+  clients:
+    - id: ${CONFIG_BACKEND_CLIENT_ID}
+      secret: ${CONFIG_BACKEND_CLIENT_SECRET}
+      apps: [backend]
+      secrets: true
+    - id: ${CONFIG_UI_CLIENT_ID}
+      secret: ${CONFIG_UI_CLIENT_SECRET}
+      apps: [ui]
+      secrets: false
+    - id: ${CONFIG_RICH_CLIENT_ID}
+      secret: ${CONFIG_RICH_CLIENT_SECRET}
+      apps: [ rich ]
+      secrets: false
+  token:
+    # Signs the tokens. Empty: a random one is made at every start (tokens stop working after a restart).
+    secret: ${CONFIG_TOKEN_SECRET:}
+    ttl-seconds: ${CONFIG_TOKEN_TTL_SECONDS:900}
+  # Fill an empty database with starter settings for the gym backend and UI.
+  seed-defaults: ${CONFIG_SEED_DEFAULTS:true}
