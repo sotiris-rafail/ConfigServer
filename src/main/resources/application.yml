@@ -39,7 +39,7 @@ cfg:
       secrets: false
     - id: ${CONFIG_RICH_CLIENT_ID}
       secret: ${CONFIG_RICH_CLIENT_SECRET}
-      apps: [ rich ]
+      apps: [rich]
       secrets: false
   token:
     # Signs the tokens. Empty: a random one is made at every start (tokens stop working after a restart).

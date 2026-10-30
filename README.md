@@ -71,6 +71,28 @@ On an empty database it creates:
   `gym.admin.password` (secret). Keys are the backend's own Spring property names, so any Spring property can be added.
 - `ui`: `brand.name`, `currency.symbol`, `banner.text`, `footer.text`, `api.base` (the address of the backend).
 
+It also makes sure, on an existing database too, that these exist (each only when missing, never replaced):
+`backend` / `gym.security.password-salt` and `gym.security.email-key`, both secret, each a random 32-byte value made on the
+first start. The backend uses them as the secret password salt and the email encryption key. **Never change or delete
+them once accounts exist** (every password would stop matching and every address become unreadable), and back them up
+together with the config database: if the database is lost the keys are lost with it.
+
+It also makes sure that every setting of the emails to members exists for `backend` (each only when missing, never replaced):
+`gym.mail.enabled` (`false`), `gym.mail.from`, `gym.mail.app-url`, `gym.mail.gym-name`, `gym.mail.currency`,
+`gym.mail.scan-seconds`, `send-seconds`, `initial-delay-seconds`, `reminder-hour`, `news-window-days`, `max-attempts`,
+`batch-size`, and the mail server: `spring.mail.host`, `port` (587), `username`, `password` (secret) and
+`spring.mail.properties.mail.smtp.auth` / `starttls.enable`. To turn the emails on, fill in `spring.mail.host`, `username`,
+`password` and `gym.mail.from` in the console and set `gym.mail.enabled` to `true`. **No restart is needed**: the backend asks
+again every 5 minutes, so switching the emails on or off, or changing the mail server, user, password or sender, takes effect
+within 5 minutes (only the three timer settings `scan-seconds`, `send-seconds` and `initial-delay-seconds` are read at start-up).
+While `gym.mail.enabled` is `false` nothing is queued or sent and members cannot turn emails on in their Preferences. A change
+that would leave the emails on but incomplete (no host or sender) is refused by the backend, which keeps the previous settings
+and logs why (see the backend README).
+
+It also makes sure `backend` / `plans.unlimited-enabled` (`true`) `home.enabled` (`true`), `gyms.multi-enabled` (`false`) and the three Analytics settings (`analytics.enabled` `true`, `analytics.follow-up-days` `30`, `analytics.low-fill-percent` `65`) exist, on an existing database too if it is missing.
+Set it to `false` in the console to stop admins from creating or assigning unlimited plans; the backend notices within
+at most 5 minutes and no restart is needed (see the backend README).
+
 ## Tests
 
     mvn test
@@ -83,3 +105,29 @@ On an empty database it creates:
 - Turn on CSRF protection (it is off, as in the backend, because this is a POC).
 - Token requests are rate limited per client id and address; reading `/config/**` with a token is not.
 - Anything in the `ui` application ends up in the browser. Never put a secret there (secret entries in `ui` are never returned).
+
+
+### Analytics settings (live)
+
+`analytics.enabled` (`false` hides the admin Analytics page and refuses its data), `analytics.follow-up-days` (1-365,
+"Worth a message" lists members with a plan and no booking for longer than this) and `analytics.low-fill-percent`
+(1-100, classes filled less than this are highlighted). The backend reads them again every 5 minutes and the admin UI
+asks the backend once a minute, so a change shows up without restarting anything. An environment variable with the same
+name (for example `ANALYTICS_ENABLED`) fixes that one value and beats the config server.
+
+
+### Several gyms switch (live)
+
+`gyms.multi-enabled` (default `false` = one gym, exactly as before). Set to `true` and the admin gets a Gyms menu entry
+(add gyms, choose the default gym, stop new bookings, archive) and members can choose which gym they train at. Set it back
+to `false` and the other gyms are hidden, not deleted: bookings already made stay valid, members keep their plans (valid
+at the default gym) and switching on again brings everything back. Before switching off, the backend's Gyms page offers a
+"switch-off check". The backend reads it again every 5 minutes and every open page asks once a minute. An environment
+variable `GYMS_MULTI_ENABLED` fixes the value and beats the config server.
+
+### Home page switch (live)
+
+`home.enabled` (default `true`). Set to `false` and visitors and members see no home page items, while the admin's
+Home page menu entry is hidden and its data refused (404). Nothing is deleted: switching it back on brings every item
+back. The backend reads it again every 5 minutes and every open page asks the backend once a minute, so no restart
+or reload is needed. An environment variable `HOME_ENABLED` fixes the value and beats the config server.
