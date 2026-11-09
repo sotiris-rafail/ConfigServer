@@ -13,7 +13,8 @@ public final class Dtos {
     }
 
     public record LoginRequest(@NotBlank(message = "Enter your username.") String username,
-                               @NotBlank(message = "Enter your password.") String password) {
+                               @NotBlank(message = "Enter your password.") String password,
+                               String code) {
     }
 
     public record Me(String username) {
@@ -45,7 +46,7 @@ public final class Dtos {
     }
 
     public record EntryView(Long id, String app, String profile, String key, String value, boolean secret,
-                            String description, Instant updatedAt, String updatedBy) {
+                            String description, Instant updatedAt, String updatedBy, String group, String hint) {
     }
 
     /** What a client receives: the merged settings for one application. */
@@ -54,6 +55,28 @@ public final class Dtos {
 
     /** One row of the console's preview: the winning value and where it came from. */
     public record PreviewRow(String key, String value, boolean secret, String source) {
+    }
+
+    /** One change to a setting. Secret values are never kept in the history, so those changes cannot be undone. */
+    public record HistoryView(Long id, String app, String profile, String key, String action, String oldValue, String newValue,
+                              boolean secret, Instant at, String by, boolean undoable) {
+    }
+
+    /** An application that may read settings, and what we know about it. */
+    public record ClientView(String id, List<String> apps, boolean secrets, boolean disabled, boolean canRefresh,
+                             Instant lastTokenAt, Instant lastFetchAt, String lastFetchApp, Integer changesNotFetched) {
+    }
+
+    public record ImportEntry(String app, String profile, String key, String value, boolean secret, String description) {
+    }
+
+    public record ImportRequest(List<ImportEntry> entries, boolean overwrite, boolean dryRun) {
+    }
+
+    public record CloneRequest(String app, String from, String to, boolean overwrite) {
+    }
+
+    public record CodeRequest(String code) {
     }
 
     public record AppsView(List<String> apps, List<String> profiles) {

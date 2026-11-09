@@ -30,7 +30,10 @@ public class TokenFilter extends OncePerRequestFilter {
 
     private final TokenService tokens;
 
-    public TokenFilter(TokenService tokens) {
+    private final com.foundry.config.service.ClientService clients;
+
+    public TokenFilter(TokenService tokens, com.foundry.config.service.ClientService clients) {
+        this.clients = clients;
         this.tokens = tokens;
     }
 
@@ -45,6 +48,10 @@ public class TokenFilter extends OncePerRequestFilter {
         Optional<TokenService.Claims> claims = tokens.verify(header.substring(7).trim());
         if (claims.isEmpty()) {
             reject(res, 401, "The token is not valid or has expired. Get a new one from POST /auth/token.");
+            return;
+        }
+        if (clients.isDisabled(claims.get().clientId())) {
+            reject(res, 403, "This client is switched off in the console.");
             return;
         }
         String app = appOf(req.getRequestURI());

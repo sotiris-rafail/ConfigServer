@@ -25,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest(properties = {
     "spring.datasource.url=jdbc:h2:mem:cfgtest;DB_CLOSE_DELAY=-1",
     "cfg.seed-defaults=false",
+    "cfg.crypto.key=test-encryption-key",
     "cfg.admin.username=boss",
     "cfg.admin.password=secret-admin",
     "cfg.token.secret=test-signing-secret-that-is-long-enough",
@@ -43,10 +44,15 @@ class ConfigServerTests {
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
     @Autowired ConfigEntryRepository repo;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @Autowired com.foundry.config.service.TotpService totp;
 
     @BeforeEach
     void clean() {
         repo.deleteAll();
+        jdbc.update("delete from config_history");
+        jdbc.update("delete from client_state");
+        jdbc.update("delete from admin_totp");
     }
 
     private MockHttpSession login() throws Exception {
@@ -180,10 +186,9 @@ class ConfigServerTests {
         // changing one letter of the payload or the signature makes the token worthless
         String token = bearer().substring("Bearer ".length());
         String[] parts = token.split("\\.");
-        String forgedPayload = parts[0] + "." + parts[1].substring(0, parts[1].length() - 1)
-            + (parts[1].endsWith("A") ? "B" : "A") + "." + parts[2];
-        String forgedSignature = parts[0] + "." + parts[1] + "." + parts[2].substring(0, parts[2].length() - 1)
-            + (parts[2].endsWith("A") ? "B" : "A");
+        // flip the FIRST character of a part: the last character of a base64 part can carry unused bits, so changing it may change nothing
+        String forgedPayload = parts[0] + "." + flip(parts[1]) + "." + parts[2];
+        String forgedSignature = parts[0] + "." + parts[1] + "." + flip(parts[2]);
         mvc.perform(get("/config/backend").header("Authorization", "Bearer " + forgedPayload)).andExpect(status().isUnauthorized());
         mvc.perform(get("/config/backend").header("Authorization", "Bearer " + forgedSignature)).andExpect(status().isUnauthorized());
 
@@ -247,5 +252,112 @@ class ConfigServerTests {
                 .content("{\"app\":\"bad name!\",\"key\":\"k\",\"value\":\"v\"}"))
             .andExpect(status().isBadRequest());
         mvc.perform(get("/config/back..end").header("Authorization", bearer())).andExpect(status().isForbidden()); // not an application this token lists
+    }
+
+    private static String flip(String part) {
+        return (part.charAt(0) == 'A' ? "B" : "A") + part.substring(1);
+    }
+
+    private String postJson(MockHttpSession s, String url, String body) throws Exception {
+        return mvc.perform(post(url).session(s).contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().is2xxSuccessful()).andReturn().getResponse().getContentAsString();
+    }
+
+    @Test
+    void values_are_checked_against_their_rules() throws Exception {
+        MockHttpSession s = login();
+        mvc.perform(post("/api/admin/entries").session(s).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"app\":\"backend\",\"key\":\"cancellation.cutoff-hours\",\"value\":\"abc\"}")).andExpect(status().isBadRequest());
+        mvc.perform(post("/api/admin/entries").session(s).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"app\":\"backend\",\"key\":\"cancellation.cutoff-hours\",\"value\":\"9999\"}")).andExpect(status().isBadRequest());
+        add(s, "backend", "default", "cancellation.cutoff-hours", "12", false);
+    }
+
+    @Test
+    void secrets_are_encrypted_in_the_database_but_served_in_plain() throws Exception {
+        MockHttpSession s = login();
+        add(s, "backend", "default", "gym.stripe.secret-key", "sk_live_abc", true);
+        String stored = repo.findAll().get(0).getPropValue();
+        org.junit.jupiter.api.Assertions.assertTrue(stored.startsWith("enc1:"));
+        org.junit.jupiter.api.Assertions.assertFalse(stored.contains("sk_live_abc"));
+        mvc.perform(get("/config/backend").header("Authorization", bearer()))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.properties['gym.stripe.secret-key']").value("sk_live_abc"));
+    }
+
+    @Test
+    void changes_are_recorded_and_can_be_undone() throws Exception {
+        MockHttpSession s = login();
+        add(s, "backend", "default", "waitlist.offer-minutes", "30", false);
+        long id = repo.findAll().get(0).getId();
+        mvc.perform(put("/api/admin/entries/" + id).session(s).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"app\":\"backend\",\"profile\":\"default\",\"key\":\"waitlist.offer-minutes\",\"value\":\"15\",\"secret\":false}")).andExpect(status().isOk());
+        String hist = mvc.perform(get("/api/admin/history").session(s)).andExpect(status().isOk())
+            .andExpect(jsonPath("$[0].newValue").value("15")).andExpect(jsonPath("$[0].by").value("boss")).andReturn().getResponse().getContentAsString();
+        long hid = json.readTree(hist).get(0).get("id").asLong();
+        mvc.perform(post("/api/admin/history/" + hid + "/undo").session(s)).andExpect(status().isOk()).andExpect(jsonPath("$.value").value("30"));
+    }
+
+    @Test
+    void secret_values_never_reach_the_history() throws Exception {
+        MockHttpSession s = login();
+        add(s, "backend", "default", "gym.mail.password", "hunter2", true);
+        mvc.perform(get("/api/admin/history").session(s)).andExpect(jsonPath("$[0].newValue").doesNotExist()).andExpect(jsonPath("$[0].undoable").value(false));
+    }
+
+    @Test
+    void a_switched_off_client_cannot_get_a_token_or_read() throws Exception {
+        MockHttpSession s = login();
+        String token = bearer();
+        mvc.perform(put("/api/admin/clients/svc/disabled?value=true").session(s)).andExpect(status().isOk());
+        mvc.perform(get("/config/backend").header("Authorization", token)).andExpect(status().isForbidden());
+        mvc.perform(post("/auth/token").contentType(MediaType.APPLICATION_JSON).content("{\"clientId\":\"svc\",\"clientSecret\":\"svc-secret\"}")).andExpect(status().isForbidden());
+        mvc.perform(put("/api/admin/clients/svc/disabled?value=false").session(s)).andExpect(status().isOk());
+        mvc.perform(get("/config/backend").header("Authorization", bearer())).andExpect(status().isOk());
+    }
+
+    @Test
+    void the_client_list_shows_changes_not_read_yet() throws Exception {
+        MockHttpSession s = login();
+        mvc.perform(get("/config/backend").header("Authorization", bearer())).andExpect(status().isOk()); // the client reads its settings
+        Thread.sleep(50);
+        add(s, "backend", "default", "waitlist.offer-minutes", "30", false); // a change it has not read yet
+        mvc.perform(get("/api/admin/clients").session(s)).andExpect(status().isOk()).andExpect(jsonPath("$[?(@.id=='svc')].changesNotFetched").value(org.hamcrest.Matchers.hasItem(1)));
+    }
+
+    @Test
+    void two_step_sign_in_asks_for_a_code() throws Exception {
+        MockHttpSession s = login();
+        String setup = postJson(s, "/api/admin/2fa/setup", "{}");
+        org.junit.jupiter.api.Assertions.assertTrue(json.readTree(setup).get("uri").asText().startsWith("otpauth://totp/"));
+        postJson(s, "/api/admin/2fa/enable", "{\"code\":\"" + totp.codeAt("boss", 0) + "\"}");
+        String login = "{\"username\":\"boss\",\"password\":\"secret-admin\"";
+        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON).content(login + "}")).andExpect(status().isPreconditionRequired());
+        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON).content(login + ",\"code\":\"000000\"}")).andExpect(status().isUnauthorized());
+        // the code used to switch it on cannot be used again; the next step's code (accepted as clock tolerance) can
+        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON).content(login + ",\"code\":\"" + totp.codeAt("boss", 0) + "\"}")).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON).content(login + ",\"code\":\"" + totp.codeAt("boss", 1) + "\"}")).andExpect(status().isOk());
+    }
+
+    @Test
+    void export_import_and_copy_profile() throws Exception {
+        MockHttpSession s = login();
+        add(s, "backend", "default", "waitlist.offer-minutes", "30", false);
+        add(s, "backend", "default", "gym.mail.password", "pw", true);
+        String exp = mvc.perform(get("/api/admin/export?app=backend").session(s)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        org.junit.jupiter.api.Assertions.assertFalse(exp.contains("\"pw\""));
+        postJson(s, "/api/admin/clone", "{\"app\":\"backend\",\"from\":\"default\",\"to\":\"staging\",\"overwrite\":false}");
+        org.junit.jupiter.api.Assertions.assertTrue(repo.findAll().stream().anyMatch(e -> e.getProfileName().equals("staging") && e.getPropKey().equals("waitlist.offer-minutes")));
+        long before = repo.count();
+        postJson(s, "/api/admin/import", "{\"entries\":[{\"app\":\"backend\",\"profile\":\"qa\",\"key\":\"waitlist.offer-minutes\",\"value\":\"5\"}],\"overwrite\":false,\"dryRun\":true}");
+        org.junit.jupiter.api.Assertions.assertEquals(before, repo.count()); // check only changes nothing
+        postJson(s, "/api/admin/import", "{\"entries\":[{\"app\":\"backend\",\"profile\":\"qa\",\"key\":\"waitlist.offer-minutes\",\"value\":\"5\"}],\"overwrite\":false,\"dryRun\":false}");
+        org.junit.jupiter.api.Assertions.assertEquals(before + 1, repo.count());
+    }
+
+    @Test
+    void warnings_point_at_settings_that_cannot_work() throws Exception {
+        MockHttpSession s = login();
+        add(s, "backend", "default", "referral.enabled", "true", false);
+        mvc.perform(get("/api/admin/warnings?app=backend").session(s)).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(org.hamcrest.Matchers.greaterThan(0)));
     }
 }

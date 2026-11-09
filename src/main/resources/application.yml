@@ -23,27 +23,30 @@ spring:
 cfg:
   # The person who edits settings in the console.
   admin:
-    username: ${CONFIG_ADMIN_USER}
-    password: ${CONFIG_ADMIN_PASSWORD}
+    username: ${CONFIG_ADMIN_USER:admin}
+    password: ${CONFIG_ADMIN_PASSWORD:config123}
   # Applications that may ask for a token (POST /auth/token with clientId and clientSecret) and then read their
   # settings (GET /config/{app} with "Authorization: Bearer <token>"). apps = which applications' settings the client
   # may read; secrets = whether it also gets the settings marked secret. Change these secrets before real use.
   clients:
-    - id: ${CONFIG_BACKEND_CLIENT_ID}
-      secret: ${CONFIG_BACKEND_CLIENT_SECRET}
+    - id: ${CONFIG_BACKEND_CLIENT_ID:backend}
+      secret: ${CONFIG_BACKEND_CLIENT_SECRET:backend-secret}
       apps: [backend]
       secrets: true
-    - id: ${CONFIG_UI_CLIENT_ID}
-      secret: ${CONFIG_UI_CLIENT_SECRET}
+      # Optional: where the console's "Refresh now" button reaches this application (it is sent the client secret).
+      refresh-url: ${CONFIG_BACKEND_REFRESH_URL:}
+    - id: ${CONFIG_UI_CLIENT_ID:ui}
+      secret: ${CONFIG_UI_CLIENT_SECRET:ui-secret}
       apps: [ui]
-      secrets: false
-    - id: ${CONFIG_RICH_CLIENT_ID}
-      secret: ${CONFIG_RICH_CLIENT_SECRET}
-      apps: [rich]
       secrets: false
   token:
     # Signs the tokens. Empty: a random one is made at every start (tokens stop working after a restart).
     secret: ${CONFIG_TOKEN_SECRET:}
     ttl-seconds: ${CONFIG_TOKEN_TTL_SECONDS:900}
+  crypto:
+    # Encrypts secret settings in the database. Empty: a key file is created at key-file (BACK IT UP - without it the
+    # encrypted secrets cannot be read).
+    key: ${CONFIG_ENCRYPTION_KEY:}
+    key-file: ${CONFIG_ENCRYPTION_KEY_FILE:./data/config.key}
   # Fill an empty database with starter settings for the gym backend and UI.
   seed-defaults: ${CONFIG_SEED_DEFAULTS:true}

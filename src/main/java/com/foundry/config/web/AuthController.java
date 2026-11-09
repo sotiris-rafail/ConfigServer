@@ -37,9 +37,11 @@ public class AuthController {
     private final String adminHash;
     private final SecurityContextRepository contextRepository;
     private final LoginThrottle throttle;
+    private final com.foundry.config.service.TotpService totp;
 
     public AuthController(ConfigProps props, PasswordEncoder encoder, SecurityContextRepository contextRepository,
-                          LoginThrottle throttle) {
+                          LoginThrottle throttle, com.foundry.config.service.TotpService totp) {
+        this.totp = totp;
         this.props = props;
         this.encoder = encoder;
         this.adminHash = encoder.encode(props.admin().password());
@@ -58,6 +60,15 @@ public class AuthController {
         if (!userOk || !passOk) {
             throttle.failed(key);
             throw new ApiException(HttpStatus.UNAUTHORIZED, "That username and password do not match.");
+        }
+        if (totp.enabled(props.admin().username())) { // two-step sign-in: the password was right, now the app's code
+            if (body.code() == null || body.code().isBlank()) {
+                throw new ApiException(HttpStatus.PRECONDITION_REQUIRED, "Enter the 6-digit code from your authenticator app.");
+            }
+            if (!totp.verify(props.admin().username(), body.code())) {
+                throttle.failed(key);
+                throw new ApiException(HttpStatus.UNAUTHORIZED, "That code is not right or was already used.");
+            }
         }
         throttle.succeeded(key);
         if (req.getSession(false) != null) {

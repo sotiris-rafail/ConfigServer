@@ -1,6 +1,2 @@
-target/
-data/
-*.mv.db
-*.trace.db
-.idea/
-*.iml
+target
+data

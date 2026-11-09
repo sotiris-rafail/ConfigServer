@@ -109,7 +109,7 @@ at most 5 minutes and no restart is needed (see the backend README).
 
 ### Analytics settings (live)
 
-`analytics.enabled` (`false` hides the admin Analytics page and refuses its data), `analytics.follow-up-days` (1-365,
+`cancellation.cutoff-hours` (0-168, default `0` = members can cancel until the class starts), `waitlist.enabled` (`true` lets members join a waiting list for a full class; default `false`), `marketing.enabled` (`false` hides the admin Marketing page and refuses its data), `analytics.enabled` (`false` hides the admin Analytics page and refuses its data), `analytics.follow-up-days` (1-365,
 "Worth a message" lists members with a plan and no booking for longer than this) and `analytics.low-fill-percent`
 (1-100, classes filled less than this are highlighted). The backend reads them again every 5 minutes and the admin UI
 asks the backend once a minute, so a change shows up without restarting anything. An environment variable with the same
@@ -131,3 +131,18 @@ variable `GYMS_MULTI_ENABLED` fixes the value and beats the config server.
 Home page menu entry is hidden and its data refused (404). Nothing is deleted: switching it back on brings every item
 back. The backend reads it again every 5 minutes and every open page asks the backend once a minute, so no restart
 or reload is needed. An environment variable `HOME_ENABLED` fixes the value and beats the config server.
+
+### Switches added later (backend app, live unless noted)
+`noshow.block-after` (0-50, default `0`) and `noshow.window-days` (1-365, default `60`): members with that many no-shows in the window cannot book. `security.persistent-login-throttle` (`true` keeps wrong-password counting in the database). `reports.enabled` (CSV downloads), `bulk.enabled` (change many members' plans at once), `staff.enabled` (coach accounts that can check people in), `payments.enabled` (members subscribe online with Stripe; needs the secrets `payments.stripe-secret-key` and `payments.stripe-webhook-secret`, which are read when the backend starts), `waitlist.offer-minutes` (0-1440, default `0`: minutes a waiting-list place is held for the member to accept; 0 = booked at once), `alerts.enabled` (email admins about backup/email/payment problems), `retention.days` (delete old audit/email records after N days, 0 = keep), `addtocal.enabled` (members: add a class to their calendar), `latecancel.enabled` (late cancels allowed but counted as strikes), `referral.enabled` + `referral.reward-visits` (bring a friend, reward in visits; needs packs), `duplicate.enabled` (admin: duplicate a class), `recurring.enabled` (members book a class for several weeks at once), `qrcheckin.enabled` (QR code check-in), `bulktools.enabled` (admin: edit several classes at once, import members from CSV), `selfservice.enabled` (member history, receipts, pause/cancel), `packs.enabled` (class packs), `status.enabled` (admin System status card), `push.enabled` (browser notifications for members who allow them; needs HTTPS), `offline.enabled` (members: saved read-only copy of the schedule and bookings when offline), `calendarview.enabled` (members: week grid next to the month calendar), `waitlist.position.enabled` (members: place in the queue, e.g. 2 of 5, and time left on an offer), `announcements.enabled` (admin notices that members see in the app). All default to off/0. See the backend README for details.
+
+## Console features (added)
+
+- **Checked values**: known settings are validated (true/false, number ranges, time zone, e-mail). A bad value is refused with a message.
+- **Groups, search, hints**: the Settings tab groups settings (Booking rules, Email, ...) and has a search box. A banner warns about settings that are on but cannot work (for example referral without packs, alerts without mail).
+- **History and undo**: every create/change/delete is recorded (who, when, old and new value). Undo restores the old value. Secret values are never recorded and cannot be undone.
+- **Secrets encrypted at rest**: secret values are stored AES-256-GCM encrypted (`enc1:` prefix) and existing plain secrets are encrypted at startup. The key is `CONFIG_ENCRYPTION_KEY`, or a key file at `CONFIG_ENCRYPTION_KEY_FILE` (default `./data/config.key`, created on first start). **Back the key up and keep it separate from the database; without it the secrets cannot be read.**
+- **Two-step sign-in**: Security tab > Set up. Add the key to an authenticator app and confirm with a code. Login then asks for the 6-digit code.
+- **Clients tab**: shows when each client last read its settings, how many changes it has not read yet, and lets you switch a client off (its token and reads are refused) and on again.
+- **Refresh now**: set `refresh-url` on a client (`CONFIG_BACKEND_REFRESH_URL`, for example `http://backend:8080/api/internal/config-refresh`). The button then calls it with the client secret and the backend re-reads its settings immediately. The backend answers only to its own client secret.
+- **Tools tab**: export (secrets only if ticked), import with a "Check only" run, and copy one profile into another.
+- The `delete` and `update` calls now record the signed-in user in the history.

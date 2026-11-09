@@ -38,9 +38,22 @@ public class ConfigService {
     private static final Pattern NAME = Pattern.compile("[A-Za-z0-9_-]+");
 
     private final ConfigEntryRepository repo;
+    private final SecretCrypto crypto;
+    private final HistoryService history;
 
-    public ConfigService(ConfigEntryRepository repo) {
+    public ConfigService(ConfigEntryRepository repo, SecretCrypto crypto, HistoryService history) {
         this.repo = repo;
+        this.crypto = crypto;
+        this.history = history;
+    }
+
+    /** The real value of a setting (secrets are stored encrypted). */
+    String plain(ConfigEntry e) {
+        return e.isSecret() ? crypto.decrypt(e.getPropValue()) : e.getPropValue();
+    }
+
+    private String store(boolean secret, String plain) {
+        return secret && plain != null && !plain.isEmpty() ? crypto.encrypt(plain) : (plain == null ? "" : plain);
     }
 
     /* ---------- merging ---------- */
@@ -56,7 +69,7 @@ public class ConfigService {
         for (String app : apps) {
             for (String profile : order) {
                 for (ConfigEntry e : repo.findByAppNameAndProfileNameOrderByPropKeyAsc(app, profile)) {
-                    out.put(e.getPropKey(), new Merged(e.getPropValue(), e.isSecret(), app + "/" + profile));
+                    out.put(e.getPropKey(), new Merged(plain(e), e.isSecret(), app + "/" + profile));
                 }
             }
         }
@@ -101,6 +114,26 @@ public class ConfigService {
         return rows;
     }
 
+    /** Problems in what the app would receive (see {@link SettingRules#warnings}). */
+    @Transactional(readOnly = true)
+    public List<String> warnings(String app, String profilesCsv) {
+        Map<String, String> m = new TreeMap<>();
+        merge(appsFor(checkName(app, "Application")), parseProfiles(profilesCsv)).forEach((k, v) -> m.put(k, v.value()));
+        return SettingRules.warnings(m);
+    }
+
+    /** How many settings of these applications (and the shared ones) changed after {@code since}. */
+    @Transactional(readOnly = true)
+    public int changedSince(List<String> apps, Instant since) {
+        int n = 0;
+        for (ConfigEntry e : repo.findAll()) {
+            if ((apps.contains(e.getAppName()) || e.getAppName().equals(SHARED)) && e.getUpdatedAt().isAfter(since)) {
+                n++;
+            }
+        }
+        return n;
+    }
+
     /* ---------- editing ---------- */
 
     @Transactional(readOnly = true)
@@ -140,11 +173,85 @@ public class ConfigService {
         e.setAppName(app);
         e.setProfileName(profile);
         e.setPropKey(key);
-        e.setPropValue(r.value());
+        String value = r.value() == null ? "" : r.value();
+        if (!r.secret()) {
+            SettingRules.validate(key, value);
+        }
+        e.setPropValue(store(r.secret(), value));
         e.setSecret(r.secret());
         e.setDescription(blankToNull(r.description()));
         stamp(e, user);
-        return view(repo.save(e));
+        ConfigEntry saved = repo.save(e);
+        history.record(saved, "CREATE", null, r.secret() ? null : value, user);
+        return view(saved);
+    }
+
+    /** Checks a setting the way saving would, without saving it (used by the import preview). */
+    @Transactional(readOnly = true)
+    public void check(EntryRequest r) {
+        checkName(r.app(), "Application");
+        profileOf(r.profile());
+        if (!r.secret()) {
+            SettingRules.validate(r.key().trim(), r.value() == null ? "" : r.value());
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public java.util.Optional<EntryView> find(String app, String profile, String key) {
+        return repo.findByAppNameAndProfileNameAndPropKey(app, profile, key).map(ConfigService::view);
+    }
+
+    /** The real value, for copying a setting to another profile (secrets included: only for admin tools, never sent to a browser). */
+    @Transactional(readOnly = true)
+    public List<EntryRequest> copies(String app, String fromProfile, String toProfile) {
+        List<EntryRequest> out = new ArrayList<>();
+        for (ConfigEntry e : repo.findAllByOrderByAppNameAscProfileNameAscPropKeyAsc()) {
+            if (e.getProfileName().equals(fromProfile) && (app == null || app.isBlank() || e.getAppName().equals(app))) {
+                out.add(new EntryRequest(e.getAppName(), toProfile, e.getPropKey(), plain(e), e.isSecret(), e.getDescription()));
+            }
+        }
+        return out;
+    }
+
+    /** Every setting with its real value, for the export file. Secrets only when asked for. */
+    @Transactional(readOnly = true)
+    public List<com.foundry.config.dto.Dtos.ImportEntry> exportAll(String app, String profile, boolean withSecrets) {
+        List<com.foundry.config.dto.Dtos.ImportEntry> out = new ArrayList<>();
+        for (ConfigEntry e : repo.findAllByOrderByAppNameAscProfileNameAscPropKeyAsc()) {
+            if ((app != null && !app.isBlank() && !e.getAppName().equals(app)) || (profile != null && !profile.isBlank() && !e.getProfileName().equals(profile))) {
+                continue;
+            }
+            out.add(new com.foundry.config.dto.Dtos.ImportEntry(e.getAppName(), e.getProfileName(), e.getPropKey(),
+                e.isSecret() && !withSecrets ? null : plain(e), e.isSecret(), e.getDescription()));
+        }
+        return out;
+    }
+
+    /** Puts a setting back the way a history entry says it was before the change. Not possible for secrets. */
+    public EntryView undo(Long historyId, String user) {
+        HistoryService.Row h = history.find(historyId).orElseThrow(() -> ApiException.notFound("History entry"));
+        if (h.secret()) {
+            throw ApiException.badRequest("Changes to secret settings are not kept, so they cannot be undone.");
+        }
+        var current = repo.findByAppNameAndProfileNameAndPropKey(h.app(), h.profile(), h.key());
+        switch (h.action()) {
+            case "CREATE" -> {
+                ConfigEntry e = current.orElseThrow(() -> ApiException.conflict("That setting no longer exists."));
+                history.record(e, "DELETE", h.newValue(), null, user);
+                repo.delete(e);
+                return view(e);
+            }
+            case "DELETE" -> {
+                if (current.isPresent()) {
+                    throw ApiException.conflict("That setting exists again; edit it instead.");
+                }
+                return create(new EntryRequest(h.app(), h.profile(), h.key(), h.oldValue(), false, null), user);
+            }
+            default -> {
+                ConfigEntry e = current.orElseThrow(() -> ApiException.conflict("That setting no longer exists."));
+                return update(e.getId(), new EntryRequest(h.app(), h.profile(), h.key(), h.oldValue(), false, e.getDescription()), user);
+            }
+        }
     }
 
     public EntryView update(Long id, EntryRequest r, String user) {
@@ -157,24 +264,32 @@ public class ConfigService {
             throw ApiException.conflict("That setting already exists for this application and profile.");
         }
         // The console never receives a secret's value, so a missing value means "keep the stored one".
-        if (r.value() == null) {
-            if (e.isSecret() && !r.secret()) {
-                throw ApiException.badRequest("Enter a value when you stop marking a setting as secret.");
-            }
-        } else {
-            e.setPropValue(r.value());
+        if (r.value() == null && e.isSecret() && !r.secret()) {
+            throw ApiException.badRequest("Enter a value when you stop marking a setting as secret.");
         }
+        String before = plain(e);
+        boolean wasSecret = e.isSecret();
+        String next = r.value() != null ? r.value() : before;
+        if (!r.secret()) {
+            SettingRules.validate(key, next);
+        }
+        e.setPropValue(store(r.secret(), next));
         e.setAppName(app);
         e.setProfileName(profile);
         e.setPropKey(key);
         e.setSecret(r.secret());
         e.setDescription(blankToNull(r.description()));
         stamp(e, user);
-        return view(repo.save(e));
+        ConfigEntry saved = repo.save(e);
+        if (wasSecret || r.secret() || !before.equals(next) || moved) {
+            history.record(saved, "UPDATE", wasSecret || r.secret() ? null : before, wasSecret || r.secret() ? null : next, user);
+        }
+        return view(saved);
     }
 
-    public void delete(Long id) {
+    public void delete(Long id, String user) {
         ConfigEntry e = repo.findById(id).orElseThrow(() -> ApiException.notFound("Setting"));
+        history.record(e, "DELETE", e.isSecret() ? null : plain(e), null, user);
         repo.delete(e);
     }
 
@@ -187,7 +302,8 @@ public class ConfigService {
 
     private static EntryView view(ConfigEntry e) {
         return new EntryView(e.getId(), e.getAppName(), e.getProfileName(), e.getPropKey(),
-            e.isSecret() ? "" : e.getPropValue(), e.isSecret(), e.getDescription(), e.getUpdatedAt(), e.getUpdatedBy());
+            e.isSecret() ? "" : e.getPropValue(), e.isSecret(), e.getDescription(), e.getUpdatedAt(), e.getUpdatedBy(),
+            SettingRules.group(e.getAppName(), e.getPropKey()), SettingRules.hint(e.getPropKey()));
     }
 
     private static String blankToNull(String s) {

@@ -21,7 +21,10 @@ public class ConfigController {
 
     private final ConfigService service;
 
-    public ConfigController(ConfigService service) {
+    private final com.foundry.config.service.ClientService clients;
+
+    public ConfigController(ConfigService service, com.foundry.config.service.ClientService clients) {
+        this.clients = clients;
         this.service = service;
     }
 
@@ -29,6 +32,7 @@ public class ConfigController {
     public ResponseEntity<Resolved> forApp(@PathVariable String app, @RequestParam(required = false) String profiles,
                                            Authentication auth) {
         boolean secrets = auth.getAuthorities().stream().anyMatch(a -> TokenFilter.SECRETS.equals(a.getAuthority()));
+        clients.fetched(auth.getName(), app);
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(service.resolve(app, profiles, secrets));
     }
 }

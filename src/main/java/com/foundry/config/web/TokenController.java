@@ -28,8 +28,10 @@ public class TokenController {
     private final ConfigProps props;
     private final TokenService tokens;
     private final LoginThrottle throttle;
+    private final com.foundry.config.service.ClientService clients;
 
-    public TokenController(ConfigProps props, TokenService tokens, LoginThrottle throttle) {
+    public TokenController(ConfigProps props, TokenService tokens, LoginThrottle throttle, com.foundry.config.service.ClientService clients) {
+        this.clients = clients;
         this.props = props;
         this.tokens = tokens;
         this.throttle = throttle;
@@ -52,7 +54,11 @@ public class TokenController {
             throttle.failed(key);
             throw new ApiException(HttpStatus.UNAUTHORIZED, "Invalid client id or secret.");
         }
+        if (clients.isDisabled(found.id())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "This client is switched off in the console.");
+        }
         throttle.succeeded(key);
+        clients.tokenIssued(found.id());
         TokenResponse out = new TokenResponse(tokens.issue(found), "Bearer", tokens.ttlSeconds(), found.apps());
         return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(out);
     }

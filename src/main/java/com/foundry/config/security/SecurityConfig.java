@@ -50,12 +50,12 @@ public class SecurityConfig {
 
     @Bean
     @Order(1)
-    public SecurityFilterChain clientChain(HttpSecurity http, TokenService tokens) throws Exception {
+    public SecurityFilterChain clientChain(HttpSecurity http, TokenService tokens, com.foundry.config.service.ClientService clients) throws Exception {
         http
             .securityMatcher("/config/**")
             .csrf(csrf -> csrf.disable()) // read-only, no cookies, no session
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .addFilterBefore(new TokenFilter(tokens), UsernamePasswordAuthenticationFilter.class)
+            .addFilterBefore(new TokenFilter(tokens, clients), UsernamePasswordAuthenticationFilter.class)
             .authorizeHttpRequests(a -> a.anyRequest().hasRole("CLIENT"))
             .exceptionHandling(e -> e
                 .authenticationEntryPoint((req, res, ex) -> json(res, 401, "A token is required. Get one from POST /auth/token."))

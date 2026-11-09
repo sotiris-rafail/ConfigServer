@@ -6,7 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 @ConfigurationProperties(prefix = "cfg")
-public record ConfigProps(Account admin, @DefaultValue List<Client> clients, @DefaultValue Token token,
+public record ConfigProps(Account admin, @DefaultValue List<Client> clients, @DefaultValue Token token, @DefaultValue Crypto crypto,
                           @DefaultValue("true") boolean seedDefaults) {
 
     public record Account(String username, String password) {
@@ -16,7 +16,11 @@ public record ConfigProps(Account admin, @DefaultValue List<Client> clients, @De
      * An application that may ask for a token. {@code apps} are the applications whose settings it may read;
      * {@code secrets} says whether those settings include the ones marked secret.
      */
-    public record Client(String id, String secret, @DefaultValue List<String> apps, @DefaultValue("false") boolean secrets) {
+    public record Client(String id, String secret, @DefaultValue List<String> apps, @DefaultValue("false") boolean secrets, String refreshUrl) {
+    }
+
+    /** Secrets are stored encrypted. {@code key} is the encryption key; empty = one is made once and kept in {@code keyFile} next to the database. */
+    public record Crypto(String key, @DefaultValue("./data/config.key") String keyFile) {
     }
 
     /** {@code secret} signs the tokens (empty: a random one is made at every start, so tokens end with a restart). */
